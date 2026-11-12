@@ -1,0 +1,9 @@
+/target/
+/dist/
+/.tools/
+*.log
+*.etl
+*.pcapng
+*.pcap
+*.dmp
+/test-clip.ts
