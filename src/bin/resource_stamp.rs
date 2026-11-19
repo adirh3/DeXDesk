@@ -24,7 +24,7 @@ fn main() -> Result<()> {
         (24, manifest),
         (3, icon),
         (14, group),
-        (16, version()),
+        (16, version()?),
         (10, notices.as_bytes().to_vec()),
     ];
     unsafe {
@@ -82,15 +82,20 @@ fn icon() -> Vec<u8> {
     data
 }
 
-fn version() -> Vec<u8> {
+fn version() -> Result<Vec<u8>> {
+    let major = u32::from(env!("CARGO_PKG_VERSION_MAJOR").parse::<u16>()?);
+    let minor = u32::from(env!("CARGO_PKG_VERSION_MINOR").parse::<u16>()?);
+    let patch = u32::from(env!("CARGO_PKG_VERSION_PATCH").parse::<u16>()?);
+    let version_ms = (major << 16) | minor;
+    let version_ls = patch << 16;
     let mut fixed = Vec::new();
     for value in [
         0xfeef04bdu32,
         0x10000,
-        1,
-        0,
-        1,
-        0,
+        version_ms,
+        version_ls,
+        version_ms,
+        version_ls,
         0x3f,
         0,
         0x40004,
@@ -103,9 +108,9 @@ fn version() -> Vec<u8> {
     }
     let strings = [
         ("FileDescription", "DeXDesk wireless desktop receiver"),
-        ("FileVersion", "0.1.0"),
+        ("FileVersion", env!("CARGO_PKG_VERSION")),
         ("ProductName", "DeXDesk"),
-        ("ProductVersion", "0.1.0"),
+        ("ProductVersion", env!("CARGO_PKG_VERSION")),
         ("OriginalFilename", "DeXDesk.exe"),
     ];
     let strings: Vec<_> = strings
@@ -116,7 +121,7 @@ fn version() -> Vec<u8> {
     let info = block("StringFileInfo", true, &[], &[table]);
     let translation = block("Translation", false, &[9, 4, 0xb0, 4], &[]);
     let variables = block("VarFileInfo", true, &[], &[translation]);
-    block("VS_VERSION_INFO", false, &fixed, &[info, variables])
+    Ok(block("VS_VERSION_INFO", false, &fixed, &[info, variables]))
 }
 
 fn block(key: &str, text: bool, value: &[u8], children: &[Vec<u8>]) -> Vec<u8> {

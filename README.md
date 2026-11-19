@@ -13,7 +13,7 @@ of the way.
 ## What it does
 
 - Receives wireless DeX directly over Wi-Fi Direct / Miracast.
-- Routes mouse and keyboard input only while the pointer is over the DeX picture.
+- Routes input only while DeXDesk is active and the pointer is over the picture.
 - Supports clicking, typing, long-press right-click, and continuous wheel scrolling.
 - Decodes H.264 with Windows Media Foundation and presents it with Direct3D 11.
 - Offers quality targets, scroll speed, always-on-top, actual FPS, and diagnostics.
@@ -31,9 +31,11 @@ PC. Other phones, adapters, drivers, and Windows versions may behave differently
 3. On the phone, open **Quick settings > DeX > TV or monitor**, then select the
    computer name shown on the welcome screen.
 
-Move the pointer over the picture to control DeX. Move it away to return input
-to Windows. Windows-key shortcuts and Alt+Tab remain local; **Ctrl+Alt+Esc**
-immediately releases input.
+Click the picture to use DeX. Input stays scoped to the picture; moving the
+pointer away stops forwarding input without changing which window is active.
+Windows manages activation normally, so hovering over DeXDesk won't switch
+you away from another app. Windows-key shortcuts and Alt+Tab remain local;
+**Ctrl+Alt+Esc** immediately releases input.
 
 Use the settings icon for quality, scroll speed, always-on-top, disconnect, and
 diagnostics. Quality changes apply on the next connection.
@@ -84,7 +86,7 @@ with every Miracast source.
 |---|---|
 | PC is not listed | Enable Wi-Fi; close other receivers; check Wi-Fi Direct driver support; reopen DeXDesk |
 | Another receiver is using the PC | Close Windows Wireless Display and any previous DeXDesk instance |
-| Picture works but input does not | Move over the actual picture, not its black borders; activate the window if Windows will not focus it on hover |
+| Picture works but input does not | Click the actual picture, not its black borders, and keep the pointer over it |
 | Picture is not sharp | Select the 1080p target and reconnect; the phone still controls the negotiated mode |
 | Frame rate remains 30 FPS | Check the actual selection in settings; choosing a 60 FPS target cannot force the sender |
 | Decoder is unavailable | Check that the Windows Media Feature Pack is installed on Windows N |
@@ -105,7 +107,8 @@ rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
 .\build.ps1 -Test
 ```
 
-The resulting portable executable is **`dist\DeXDesk.exe`**. The build uses a
+The resulting portable executable is **`dist\DeXDesk.exe`**. Use
+`-OutputDirectory .\dist\preview` to build alongside a running copy. The build uses a
 locked dependency graph and the GNU Rust toolchain, so a system-wide Visual
 Studio installation is not required.
 

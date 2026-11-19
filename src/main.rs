@@ -40,7 +40,11 @@ fn run() -> Result<()> {
         }
     };
     let state = AppState::new(settings)?;
-    state.log("DeXDesk 0.1 starting: native Rust / Windows Media Foundation / Direct3D 11");
+    state.log(concat!(
+        "DeXDesk ",
+        env!("CARGO_PKG_VERSION"),
+        " starting: native Rust / Windows Media Foundation / Direct3D 11"
+    ));
     ui::run(
         state,
         args.iter().any(|a| a == "--preview" || a == "--smoke-ui"),

@@ -1,4 +1,7 @@
-param([switch]$Test)
+param(
+    [switch]$Test,
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
+)
 $ErrorActionPreference = 'Stop'
 $previous = @{
     CARGO_HOME=$env:CARGO_HOME; RUSTUP_HOME=$env:RUSTUP_HOME; PATH=$env:PATH
@@ -41,13 +44,12 @@ try {
     }
     & $cargo "+$toolchain" build --release --locked --bin dexdesk
     if ($LASTEXITCODE -ne 0) { throw 'Rust release build failed.' }
-    New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'dist') -Force | Out-Null
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $exe = Join-Path (Resolve-Path -LiteralPath $OutputDirectory) 'DeXDesk.exe'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'target\release\dexdesk.exe') `
-        -Destination (Join-Path $PSScriptRoot 'dist\DeXDesk.exe') -Force
-    & $cargo "+$toolchain" run --locked --bin resource_stamp -- `
-        (Join-Path $PSScriptRoot 'dist\DeXDesk.exe') (Join-Path $PSScriptRoot 'app.manifest')
+        -Destination $exe -Force
+    & $cargo "+$toolchain" run --locked --bin resource_stamp -- $exe (Join-Path $PSScriptRoot 'app.manifest')
     if ($LASTEXITCODE -ne 0) { throw 'Windows application resource packaging failed.' }
-    $exe = Join-Path $PSScriptRoot 'dist\DeXDesk.exe'
     $latin = [Text.Encoding]::GetEncoding(28591)
     $binary = $latin.GetString([IO.File]::ReadAllBytes($exe))
     foreach ($remap in $remaps) {
@@ -61,7 +63,7 @@ try {
             }
         }
     }
-    Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'dist\DeXDesk.exe') -Algorithm SHA256
+    Get-FileHash -LiteralPath $exe -Algorithm SHA256
 }
 finally {
     Pop-Location

@@ -27,7 +27,8 @@ picture. Preserve the clean window with one settings icon.
   contact per burst. Do not relabel these as native HID mouse events.
 - Never capture input globally. Release all keys and contacts on picture leave,
   activation loss, settings, disconnect, stop and exit. Keep Windows shortcuts
-  and the Ctrl+Alt+Esc release path usable.
+  and the Ctrl+Alt+Esc release path usable. Leave window activation to Windows;
+  pointer movement over or off the picture must not change the active window.
 
 ## Working on the code
 

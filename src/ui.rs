@@ -64,9 +64,7 @@ struct App {
     keys: RefCell<BTreeSet<u8>>,
     hovered: Cell<bool>,
     down: Cell<bool>,
-    previous: Cell<HWND>,
     pointer: Cell<(u16, u16)>,
-    releasing: Cell<bool>,
     closing: Cell<bool>,
     animating: Cell<bool>,
     last_frames: Cell<u64>,
@@ -97,9 +95,7 @@ impl App {
             keys: RefCell::new(BTreeSet::new()),
             hovered: Cell::new(false),
             down: Cell::new(false),
-            previous: Cell::new(HWND::default()),
             pointer: Cell::new((0, 0)),
-            releasing: Cell::new(false),
             closing: Cell::new(false),
             animating: Cell::new(false),
             last_frames: Cell::new(0),
@@ -134,10 +130,7 @@ impl App {
         let events = self.gesture.borrow_mut().cancel();
         self.contacts(events);
     }
-    fn release(&self, restore: bool) {
-        if self.releasing.replace(true) {
-            return;
-        }
+    fn release(&self) {
         let hovered = self.hovered.replace(false);
         self.cancel_gesture();
         let held = !self.keys.borrow().is_empty();
@@ -149,23 +142,18 @@ impl App {
             let (x, y) = self.pointer.get();
             self.contacts(vec![input::ContactEvent { x, y, down: false }]);
         }
-        unsafe {
-            let previous = self.previous.replace(HWND::default());
-            if restore
-                && !previous.is_invalid()
-                && previous != self.parent.get()
-                && GetForegroundWindow() == self.parent.get()
-            {
-                let _ = SetForegroundWindow(previous);
-            }
-        }
-        self.releasing.set(false);
+    }
+    fn is_foreground(&self) -> bool {
+        unsafe { GetForegroundWindow() == self.parent.get() }
     }
     fn mode(&self) -> Option<crate::protocol::VideoMode> {
         *self.state.mode.lock().unwrap()
     }
     fn point(&self, x: i32, y: i32) -> Option<(u16, u16)> {
-        if !self.state.live.load(Ordering::Acquire) || !self.state.input.lock().unwrap().is_some() {
+        if !self.is_foreground()
+            || !self.state.live.load(Ordering::Acquire)
+            || self.state.input.lock().unwrap().is_none()
+        {
             return None;
         }
         let mode = self.mode()?;
@@ -182,17 +170,14 @@ impl App {
             ((y - rect.top) as i64 * 32767 / (rect.bottom - rect.top).max(1) as i64) as u16,
         ))
     }
-    fn hover(&self, x: i32, y: i32) {
+    fn hover(&self, x: i32, y: i32) -> bool {
         let Some(point) = self.point(x, y) else {
-            self.release(true);
-            return;
+            self.release();
+            return false;
         };
         self.pointer.set(point);
         if !self.hovered.replace(true) {
             unsafe {
-                self.previous.set(GetForegroundWindow());
-                let _ = SetForegroundWindow(self.parent.get());
-                let _ = SetFocus(self.video.get());
                 let mut tracking = TRACKMOUSEEVENT {
                     cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                     dwFlags: TME_LEAVE,
@@ -209,9 +194,10 @@ impl App {
                 down: self.down.get(),
             }]);
         }
+        true
     }
     fn mouse_button(&self, right: bool, down: bool) {
-        if !self.hovered.get() {
+        if !self.hovered.get() || !self.is_foreground() {
             return;
         }
         let (x, y) = self.pointer.get();
@@ -241,19 +227,19 @@ impl App {
         self.contacts(events);
     }
     fn key(&self, vk: u32, lparam: LPARAM, down: bool) -> bool {
-        if !self.hovered.get() {
+        if !self.hovered.get() || !self.is_foreground() {
             return false;
         }
         unsafe {
             if vk == VK_TAB.0 as u32 && GetKeyState(VK_MENU.0 as i32) < 0 {
-                self.release(false);
+                self.release();
                 return false;
             }
             if vk == VK_ESCAPE.0 as u32
                 && GetKeyState(VK_CONTROL.0 as i32) < 0
                 && GetKeyState(VK_MENU.0 as i32) < 0
             {
-                self.release(true);
+                self.release();
                 return true;
             }
         }
@@ -313,15 +299,15 @@ impl App {
             return;
         }
         let _ = MoveWindow(self.video.get(), 0, 0, rect.right, rect.bottom, true);
-        let _ = MoveWindow(
+        let _ = SetWindowPos(
             self.gear.get(),
+            HWND_TOP,
             rect.right - self.scale(52),
             self.scale(12),
             self.scale(36),
             self.scale(36),
-            true,
+            SWP_NOACTIVATE,
         );
-        let _ = BringWindowToTop(self.gear.get());
     }
     unsafe fn welcome(&self, window: HWND) {
         let mut paint = PAINTSTRUCT::default();
@@ -401,7 +387,7 @@ impl App {
         let _ = EndPaint(window, &paint);
     }
     unsafe fn open_settings(&self) {
-        self.release(false);
+        self.release();
         if !self.dialog.get().is_invalid() {
             let _ = SetForegroundWindow(self.dialog.get());
             return;
@@ -909,7 +895,10 @@ unsafe extern "system" fn main_proc(
         }
         WM_TIMER => {
             if wparam.0 == TICK {
-                if app.hovered.get() && app.state.live.load(Ordering::Acquire) {
+                if app.hovered.get()
+                    && app.is_foreground()
+                    && app.state.live.load(Ordering::Acquire)
+                {
                     let events = app.gesture.borrow_mut().tick();
                     app.contacts(events);
                 }
@@ -950,7 +939,7 @@ unsafe extern "system" fn main_proc(
         }
         STATE_CHANGED | VIDEO_STARTED | VIDEO_STOPPED => {
             if message == VIDEO_STOPPED {
-                app.release(false);
+                app.release();
                 app.last_frames.set(0);
                 app.fps.set(0.0);
             }
@@ -958,12 +947,12 @@ unsafe extern "system" fn main_proc(
             LRESULT(0)
         }
         WM_ACTIVATE if wparam.0 & 0xffff == WA_INACTIVE as usize => {
-            app.release(false);
-            LRESULT(0)
+            app.release();
+            DefWindowProcW(window, message, wparam, lparam)
         }
         WM_CLOSE => {
             if !app.closing.replace(true) {
-                app.release(false);
+                app.release();
                 app.close_settings();
                 if !app.smoke {
                     let mut placement = WINDOWPLACEMENT {
@@ -1021,22 +1010,20 @@ unsafe extern "system" fn video_proc(
             app.hover(x, y);
             LRESULT(0)
         }
-        WM_MOUSELEAVE => {
-            app.release(true);
+        WM_MOUSELEAVE | WM_KILLFOCUS => {
+            app.release();
             LRESULT(0)
         }
-        WM_LBUTTONDOWN => {
-            app.hover(x, y);
-            app.mouse_button(false, true);
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+            if app.hover(x, y) {
+                // Windows activates the app; the click selects its custom video control.
+                let _ = SetFocus(window);
+                app.mouse_button(message == WM_RBUTTONDOWN, true);
+            }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             app.mouse_button(false, false);
-            LRESULT(0)
-        }
-        WM_RBUTTONDOWN => {
-            app.hover(x, y);
-            app.mouse_button(true, true);
             LRESULT(0)
         }
         WM_RBUTTONUP | WM_CONTEXTMENU => LRESULT(0),
