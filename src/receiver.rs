@@ -50,7 +50,7 @@ pub fn start(state: Arc<AppState>) -> thread::JoinHandle<()> {
         if let Err(error) = result {
             state.log(format!("Receiver stopped: {error:#}"));
             if state.running.load(Ordering::Acquire) {
-                state.set_phase(Phase::Error(error.to_string()));
+                state.set_phase(Phase::ReceiverUnavailable(error.to_string()));
             }
         }
     })
@@ -58,12 +58,15 @@ pub fn start(state: Arc<AppState>) -> thread::JoinHandle<()> {
 
 fn run(state: &Arc<AppState>) -> Result<()> {
     let _apartment = Apartment::new()?;
-    let guard=TcpListener::bind(("0.0.0.0",7236))
-        .context("Another wireless-display receiver is using this PC. Close Windows Wireless Display or the earlier test app, then reopen DeXDesk.")?;
+    let guard = TcpListener::bind(("0.0.0.0", 7236)).context(
+        "Could not open Miracast port 7236. Close Windows Wireless Display or any other receiver, then retry.",
+    )?;
     guard.set_nonblocking(true)?;
     let (sender, requests) = mpsc::sync_channel(1);
     let mut advertisement = Advertisement::new(state.clone())?;
     let callback_state = state.clone();
+    let request_pending = Arc::new(AtomicBool::new(false));
+    let callback_pending = request_pending.clone();
     let token = advertisement
         .listener
         .ConnectionRequested(&TypedEventHandler::new(
@@ -73,11 +76,10 @@ fn run(state: &Arc<AppState>) -> Result<()> {
                     callback_state.log("Windows delivered an empty Wi-Fi Direct request");
                     return Ok(());
                 };
-                if callback_state
-                    .session_active
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
+                if !callback_state.running.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                if callback_pending.swap(true, Ordering::AcqRel) {
                     callback_state.log(
                         "Ignored another connection request while a phone is already connected",
                     );
@@ -85,18 +87,13 @@ fn run(state: &Arc<AppState>) -> Result<()> {
                 }
                 match args.GetConnectionRequest() {
                     Ok(request) => {
-                        callback_state.disconnect.store(false, Ordering::Release);
                         if sender.try_send(request).is_err() {
-                            callback_state
-                                .session_active
-                                .store(false, Ordering::Release);
+                            callback_pending.store(false, Ordering::Release);
                             callback_state.log("Could not queue the Wi-Fi Direct request");
                         }
                     }
                     Err(error) => {
-                        callback_state
-                            .session_active
-                            .store(false, Ordering::Release);
+                        callback_pending.store(false, Ordering::Release);
                         callback_state
                             .log(format!("Windows rejected the connection request: {error}"));
                     }
@@ -104,7 +101,22 @@ fn run(state: &Arc<AppState>) -> Result<()> {
                 Ok(())
             },
         ))?;
-    advertisement.start()?;
+    let result = (|| -> Result<()> {
+        advertisement.start()?;
+        receive_requests(state, &guard, &requests, &request_pending)
+    })();
+    if let Err(error) = advertisement.listener.RemoveConnectionRequested(token) {
+        state.log(format!("Could not unregister Wi-Fi Direct requests: {error}"));
+    }
+    result
+}
+
+fn receive_requests(
+    state: &Arc<AppState>,
+    guard: &TcpListener,
+    requests: &mpsc::Receiver<WiFiDirectConnectionRequest>,
+    request_pending: &AtomicBool,
+) -> Result<()> {
     state.set_phase(Phase::Ready);
     while state.running.load(Ordering::Acquire) {
         let request = match requests.recv_timeout(Duration::from_millis(150)) {
@@ -112,27 +124,28 @@ fn run(state: &Arc<AppState>) -> Result<()> {
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(error) => return Err(error.into()),
         };
-        let result = connect_phone(state, &guard, request);
-        state.session_active.store(false, Ordering::Release);
+        state.disconnect.store(false, Ordering::Release);
+        state.session_active.store(true, Ordering::Release);
+        let result = connect_phone(state, guard, request);
         state.live.store(false, Ordering::Release);
         *state.input.lock().unwrap() = None;
         *state.mode.lock().unwrap() = None;
         state.frames.store(0, Ordering::Release);
+        state.session_active.store(false, Ordering::Release);
+        request_pending.store(false, Ordering::Release);
         state.notify(VIDEO_STOPPED);
         if !state.running.load(Ordering::Acquire) {
             break;
         }
         match result {
+            _ if state.disconnect.load(Ordering::Acquire) => state.set_phase(Phase::Ready),
             Ok(()) => state.set_phase(Phase::Ready),
             Err(error) => {
                 state.log(format!("Connection ended: {error:#}"));
-                state.set_phase(Phase::Error(format!(
-                    "Connection ended: {error}. You can reconnect from DeX."
-                )));
+                state.set_phase(Phase::Error(error.to_string()));
             }
         }
     }
-    advertisement.listener.RemoveConnectionRequested(token)?;
     Ok(())
 }
 
@@ -178,6 +191,7 @@ fn connect_phone(
         }
         let (local, remote) =
             peer.context("Windows did not provide IPv4 Wi-Fi Direct endpoints")?;
+        state.set_phase(Phase::Negotiating);
         state.log(format!("Wi-Fi Direct connected: {local} <-> {remote}"));
         let stream = match tcp(local, remote, 7236) {
             Ok(stream) => stream,
@@ -297,6 +311,19 @@ fn write(stream: &mut TcpStream, message: String) -> Result<()> {
         .context("Miracast control connection failed")
 }
 
+const RTSP_START_TIMEOUT: Duration = Duration::from_secs(20);
+const FIRST_PICTURE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn check_session_start(elapsed: Duration, input_ready: bool, picture_ready: bool) -> Result<()> {
+    if !input_ready && elapsed >= RTSP_START_TIMEOUT {
+        bail!("The phone did not finish setting up Miracast. End the cast on your Galaxy and try again.");
+    }
+    if input_ready && !picture_ready && elapsed >= FIRST_PICTURE_TIMEOUT {
+        bail!("The phone connected, but no picture arrived. End the cast and try again.");
+    }
+    Ok(())
+}
+
 fn session(
     state: &Arc<AppState>,
     mut stream: TcpStream,
@@ -314,8 +341,8 @@ fn session(
     let mut input_stream = None;
     let mut mode: Option<VideoMode> = None;
     let mut sequence = 0;
-    let mut setup_sequence = 0;
-    let mut play_sequence = 0;
+    let mut setup_sequence = None;
+    let mut play_sequence = None;
     let mut session_id = String::new();
     let mut url = format!("rtsp://{remote}/wfd1.0/streamid=0");
     let mut uibc = String::new();
@@ -323,6 +350,7 @@ fn session(
     let mut framer = RtspFramer::default();
     let mut bytes = [0u8; 8192];
     let mut last_recover = Instant::now() - Duration::from_secs(2);
+    let mut stage_started = Instant::now();
     let quality = state.settings.lock().unwrap().quality;
     state.log(format!(
         "Starting Miracast; quality target: {}",
@@ -331,6 +359,18 @@ fn session(
 
     let result = (|| -> Result<()> {
         while !stopping(state) && life.load(Ordering::Acquire) {
+            if input_thread.is_some()
+                && !state.live.load(Ordering::Acquire)
+                && state.frames.load(Ordering::Acquire) > 0
+            {
+                state.live.store(true, Ordering::Release);
+                state.notify(VIDEO_STARTED);
+            }
+            check_session_start(
+                stage_started.elapsed(),
+                input_thread.is_some(),
+                state.frames.load(Ordering::Acquire) > 0,
+            )?;
             if recover.load(Ordering::Acquire)
                 && last_recover.elapsed() > Duration::from_secs(1)
                 && !session_id.is_empty()
@@ -349,7 +389,8 @@ fn session(
                 last_recover = Instant::now();
             }
             match stream.read(&mut bytes) {
-                Ok(0) => break,
+                Ok(0) if state.live.load(Ordering::Acquire) => break,
+                Ok(0) => bail!("The phone closed the connection before sending a picture"),
                 Ok(count) => framer.push(&bytes[..count])?,
                 Err(error)
                     if matches!(
@@ -362,12 +403,21 @@ fn session(
                 Err(error) => return Err(error.into()),
             }
             while let Some(message) = framer.next_message()? {
+                if stopping(state) || !life.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                check_session_start(
+                    stage_started.elapsed(),
+                    input_thread.is_some(),
+                    state.frames.load(Ordering::Acquire) > 0,
+                )?;
                 let received = message.sequence()?;
                 if message.response() {
                     if !message.start.starts_with("RTSP/1.0 200") {
                         bail!("The phone rejected a control request: {}", message.start);
                     }
-                    if received == setup_sequence {
+                    if setup_sequence == Some(received) {
+                        setup_sequence = None;
                         session_id = message
                             .headers
                             .get("session")
@@ -377,7 +427,7 @@ fn session(
                             .unwrap_or("")
                             .to_owned();
                         sequence += 1;
-                        play_sequence = sequence;
+                        play_sequence = Some(sequence);
                         write(
                             &mut stream,
                             protocol::rtsp(
@@ -387,7 +437,8 @@ fn session(
                                 &format!("Session: {session_id}\r\n"),
                             ),
                         )?;
-                    } else if received == play_sequence {
+                    } else if play_sequence == Some(received) {
+                        play_sequence = None;
                         let selected = mode.context("The phone did not select a video format")?;
                         let (port, pointer, keyboard) = protocol::input_capability(&uibc);
                         if port == 0 || !pointer || !keyboard {
@@ -405,9 +456,9 @@ fn session(
                         )?;
                         let mut input = tcp(local, remote, port)?;
                         input.write_all(&protocol::keyboard_descriptor())?;
+                        input_stream = Some(input.try_clone()?);
                         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(512);
                         *state.input.lock().unwrap() = Some(sender);
-                        input_stream = Some(input.try_clone()?);
                         let worker_state = state.clone();
                         let worker_life = life.clone();
                         input_thread = Some(thread::spawn(move || {
@@ -428,6 +479,8 @@ fn session(
                             let _ = input.shutdown(Shutdown::Both);
                         }));
                         state.log(format!("Session ready: {}x{} at {} FPS, generic pointer and native HID keyboard",selected.width,selected.height,selected.fps));
+                        stage_started = Instant::now();
+                        state.set_phase(Phase::WaitingForVideo);
                         recover.store(true, Ordering::Release);
                     }
                     continue;
@@ -504,9 +557,12 @@ fn session(
                             protocol::rtsp("RTSP/1.0 200 OK", received, "", ""),
                         )?;
                         match parameters.get("wfd_trigger_method").map(String::as_str) {
-                            Some("SETUP") => {
+                            Some("SETUP") if setup_sequence.is_none()
+                                && play_sequence.is_none()
+                                && input_thread.is_none() =>
+                            {
                                 sequence += 1;
-                                setup_sequence = sequence;
+                                setup_sequence = Some(sequence);
                                 write(&mut stream,protocol::rtsp(&format!("SETUP {url} RTSP/1.0"),sequence,"",
                                     &format!("Transport: RTP/AVP/UDP;unicast;client_port={rtp_port}-{}\r\n",rtp_port+1)))?;
                             }
@@ -613,14 +669,14 @@ fn video_worker(
                     for picture in demux.push(&payload)? {
                         let count = video.push(&picture.bytes, picture.discontinuity)?;
                         state.frames.store(count, Ordering::Release);
-                        if count > 0 && !state.live.swap(true, Ordering::AcqRel) {
-                            state.set_phase(Phase::Connected);
-                            state.notify(VIDEO_STARTED);
-                        }
                     }
                 }
                 let mut control = [0u8; 1500];
-                while rtcp.recv_from(&mut control).is_ok() {}
+                for _ in 0..32 {
+                    if rtcp.recv_from(&mut control).is_err() {
+                        break;
+                    }
+                }
             }
             Ok(())
         })();
@@ -630,4 +686,32 @@ fn video_worker(
         }
         result
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiation_times_out_even_if_video_started_early() {
+        assert!(check_session_start(
+            RTSP_START_TIMEOUT - Duration::from_millis(1),
+            false,
+            false
+        )
+        .is_ok());
+        assert!(check_session_start(RTSP_START_TIMEOUT, false, true).is_err());
+    }
+
+    #[test]
+    fn first_picture_has_a_separate_deadline() {
+        assert!(check_session_start(
+            FIRST_PICTURE_TIMEOUT - Duration::from_millis(1),
+            true,
+            false
+        )
+        .is_ok());
+        assert!(check_session_start(FIRST_PICTURE_TIMEOUT, true, false).is_err());
+        assert!(check_session_start(Duration::from_secs(60), true, true).is_ok());
+    }
 }

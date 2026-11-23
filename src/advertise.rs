@@ -1,7 +1,7 @@
 use crate::runtime::AppState;
 use anyhow::{bail, Context, Result};
 use std::{
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
     thread,
     time::{Duration, Instant},
 };
@@ -84,16 +84,23 @@ impl Advertisement {
         }
     }
     pub fn start(&mut self) -> Result<()> {
-        self.publisher.Start()?;
+        self.publisher
+            .Start()
+            .context("Windows could not start Wi-Fi Direct. Check that Wi-Fi is on")?;
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            match self.publisher.Status()?{
-                WiFiDirectAdvertisementPublisherStatus::Started=>break,
-                WiFiDirectAdvertisementPublisherStatus::Aborted=>bail!("Wi-Fi Direct could not start. Turn on Wi-Fi and close other wireless-display receivers."),
-                _=>{}
+            if !self.state.running.load(Ordering::Acquire) {
+                bail!("The receiver was stopped");
             }
-            if Instant::now() > deadline {
-                bail!("Windows did not start Wi-Fi Direct in time");
+            match self.publisher.Status()? {
+                WiFiDirectAdvertisementPublisherStatus::Started => break,
+                WiFiDirectAdvertisementPublisherStatus::Aborted => {
+                    bail!("Wi-Fi Direct could not start. Turn on Wi-Fi and close other wireless-display receivers.");
+                }
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                bail!("Wi-Fi Direct did not start in time. Check that Wi-Fi is on, then retry.");
             }
             thread::sleep(Duration::from_millis(40));
         }
@@ -137,10 +144,8 @@ impl Drop for Advertisement {
                     .log(format!("Could not stop Miracast provider: {e}"));
             }
         }
-        if self.publisher.Status().ok() == Some(WiFiDirectAdvertisementPublisherStatus::Started) {
-            if let Err(e) = self.publisher.Stop() {
-                self.state.log(format!("Could not stop Wi-Fi Direct: {e}"));
-            }
+        if let Err(e) = self.publisher.Stop() {
+            self.state.log(format!("Could not stop Wi-Fi Direct: {e}"));
         }
         unsafe {
             let result = (self.close)(self.handle);

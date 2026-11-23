@@ -25,10 +25,13 @@ pub const VIDEO_STOPPED: u32 = WM_APP + 3;
 
 #[derive(Clone, Debug)]
 pub enum Phase {
+    Preview,
     Starting,
     Ready,
     Connecting(String),
-    Connected,
+    Negotiating,
+    WaitingForVideo,
+    ReceiverUnavailable(String),
     Error(String),
 }
 
