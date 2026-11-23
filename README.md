@@ -40,6 +40,11 @@ you away from another app. Windows-key shortcuts and Alt+Tab remain local;
 Use the settings icon for quality, scroll speed, always-on-top, disconnect, and
 diagnostics. Quality changes apply on the next connection.
 
+The welcome screen shows whether the receiver is starting, waiting for your
+Galaxy, setting up a cast, or waiting for video. Use **Cancel connection** during
+setup or **Retry receiver** after a receiver startup error. If the cast times
+out, end it on the Galaxy and select the PC again.
+
 ## Requirements and limits
 
 | Requirement | Details |
@@ -84,8 +89,9 @@ with every Miracast source.
 
 | Symptom | What to check |
 |---|---|
-| PC is not listed | Enable Wi-Fi; close other receivers; check Wi-Fi Direct driver support; reopen DeXDesk |
+| PC is not listed | Enable Wi-Fi, close other receivers, and check Wi-Fi Direct driver support. Use **Retry receiver** if DeXDesk reports a startup error. |
 | Another receiver is using the PC | Close Windows Wireless Display and any previous DeXDesk instance |
+| Cast connects without a picture | End the cast on the Galaxy and try again. Open **Settings → Diagnostics** for the connection stage and any decoder errors. |
 | Picture works but input does not | Click the actual picture, not its black borders, and keep the pointer over it |
 | Picture is not sharp | Select the 1080p target and reconnect; the phone still controls the negotiated mode |
 | Frame rate remains 30 FPS | Check the actual selection in settings; choosing a 60 FPS target cannot force the sender |
