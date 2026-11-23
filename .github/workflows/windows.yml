@@ -1,0 +1,31 @@
+name: Windows checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned GNU toolchain
+        shell: pwsh
+        run: rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
+      - name: Test and package DeXDesk
+        shell: pwsh
+        run: .\build.ps1 -Test
+      - name: Smoke-test the packaged UI
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'dexdesk-smoke'
+          $process = Start-Process -FilePath .\dist\DeXDesk.exe -ArgumentList '--smoke-ui' -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(15000)) {
+              $process.Kill()
+              throw 'DeXDesk smoke test did not exit within 15 seconds.'
+          }
+          if ($process.ExitCode -ne 0) {
+              throw "DeXDesk smoke test failed with exit code $($process.ExitCode)."
+          }
