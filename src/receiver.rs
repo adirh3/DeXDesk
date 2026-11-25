@@ -477,7 +477,7 @@ fn session(
                             Ok(input)
                         })();
                         time_left()?;
-                        let input = input.context("Could not start phone input")?;
+                        let mut input = input.context("Could not start phone input")?;
                         input_stream = Some(input.try_clone()?);
                         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(512);
                         *state.input.lock().unwrap() = Some(sender);
