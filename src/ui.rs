@@ -112,6 +112,12 @@ impl App {
     fn scale(&self, value: i32) -> i32 {
         unsafe { value * GetDpiForWindow(self.parent.get()).max(96) as i32 / 96 }
     }
+    fn minimum_window_size(&self) -> POINT {
+        POINT {
+            x: self.scale(640),
+            y: self.scale(480),
+        }
+    }
     fn contacts(&self, events: Vec<input::ContactEvent>) {
         for event in events {
             let mut down = self.down.get();
@@ -825,6 +831,23 @@ pub fn run(state: Arc<AppState>, preview: bool, smoke: bool) -> Result<()> {
             instance,
             Some(app.as_ref() as *const App as *const _),
         )?;
+        // The tracking minimum does not clamp restored pixel sizes at creation.
+        let minimum = app.minimum_window_size();
+        let width = settings.window_width.max(minimum.x);
+        let height = settings.window_height.max(minimum.y);
+        if (width, height) != (settings.window_width, settings.window_height) {
+            if let Err(error) = SetWindowPos(
+                window,
+                HWND::default(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            ) {
+                state.log(format!("Could not restore a usable window size: {error}"));
+            }
+        }
         if settings.always_on_top {
             SetWindowPos(
                 window,
@@ -1009,10 +1032,7 @@ unsafe extern "system" fn main_proc(
         }
         WM_GETMINMAXINFO => {
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
-            info.ptMinTrackSize = POINT {
-                x: app.scale(640),
-                y: app.scale(480),
-            };
+            info.ptMinTrackSize = app.minimum_window_size();
             LRESULT(0)
         }
         WM_COMMAND if wparam.0 & 0xffff == GEAR => {

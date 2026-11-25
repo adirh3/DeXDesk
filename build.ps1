@@ -31,9 +31,12 @@ try {
             Sort-Object Name | Select-Object -Last 1 -ExpandProperty FullName
         if ($linker) {
             $env:PATH = (Join-Path $linker 'bin') + ';' + $env:PATH
-        } elseif (-not (Get-Command aarch64-w64-mingw32-clang -ErrorAction SilentlyContinue)) {
+        }
+        $clang = Get-Command aarch64-w64-mingw32-clang -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $clang) {
             throw 'ARM64 builds need llvm-mingw (aarch64) in .tools or on PATH.'
         }
+        $linker = Split-Path -Parent (Split-Path -Parent $clang.Source)
     } else {
         $toolchain='1.99.1-x86_64-pc-windows-gnu'
     }

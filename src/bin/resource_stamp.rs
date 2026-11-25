@@ -18,7 +18,9 @@ fn main() -> Result<()> {
     let notices = concat!(
         include_str!("..\\..\\LICENSE"),
         "\n\n",
-        include_str!("..\\..\\THIRD-PARTY-NOTICES.txt")
+        include_str!("..\\..\\THIRD-PARTY-NOTICES.txt"),
+        "\n\n",
+        include_str!("..\\..\\licenses\\MinGW-w64-runtime.txt")
     );
     let resources = [
         (24, manifest),

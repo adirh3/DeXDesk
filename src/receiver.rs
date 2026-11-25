@@ -199,7 +199,7 @@ fn connect_phone(
             peer.context("Windows did not provide IPv4 Wi-Fi Direct endpoints")?;
         state.set_phase(Phase::Negotiating);
         state.log(format!("Wi-Fi Direct connected: {local} <-> {remote}"));
-        let stream = match tcp(local, remote, 7236) {
+        let stream = match tcp(local, remote, 7236, TCP_CONNECT_TIMEOUT) {
             Ok(stream) => stream,
             Err(error) => {
                 state.log(format!(
@@ -231,13 +231,13 @@ fn stopping(state: &AppState) -> bool {
     !state.running.load(Ordering::Acquire) || state.disconnect.load(Ordering::Acquire)
 }
 
-fn tcp(local: IpAddr, remote: IpAddr, port: u16) -> Result<TcpStream> {
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const TCP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn tcp(local: IpAddr, remote: IpAddr, port: u16, timeout: Duration) -> Result<TcpStream> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.bind(&SocketAddr::new(local, 0).into())?;
-    socket.connect_timeout(
-        &SocketAddr::new(remote, port).into(),
-        Duration::from_secs(5),
-    )?;
+    socket.connect_timeout(&SocketAddr::new(remote, port).into(), timeout)?;
     let stream: TcpStream = socket.into();
     configure_tcp(&stream)?;
     Ok(stream)
@@ -247,7 +247,7 @@ fn configure_tcp(stream: &TcpStream) -> Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_millis(120)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(TCP_WRITE_TIMEOUT))?;
     Ok(())
 }
 
@@ -328,6 +328,11 @@ fn check_session_start(elapsed: Duration, input_ready: bool, picture_ready: bool
         bail!("The phone connected, but no picture arrived. End the cast and try again.");
     }
     Ok(())
+}
+
+fn negotiation_time_left(elapsed: Duration) -> Result<Duration> {
+    check_session_start(elapsed, false, false)?;
+    Ok(RTSP_START_TIMEOUT - elapsed)
 }
 
 fn session(
@@ -451,17 +456,28 @@ fn session(
                             bail!("This phone did not allow the required mouse/keyboard input channel");
                         }
                         sequence += 1;
-                        write(
-                            &mut stream,
-                            protocol::rtsp(
-                                &format!("SET_PARAMETER {url} RTSP/1.0"),
-                                sequence,
-                                "wfd_uibc_setting: enable\r\n",
-                                &format!("Session: {session_id}\r\n"),
-                            ),
-                        )?;
-                        let mut input = tcp(local, remote, port)?;
-                        input.write_all(&protocol::keyboard_descriptor())?;
+                        let time_left = || negotiation_time_left(stage_started.elapsed());
+                        let input = (|| -> Result<TcpStream> {
+                            stream.set_write_timeout(Some(TCP_WRITE_TIMEOUT.min(time_left()?)))?;
+                            write(
+                                &mut stream,
+                                protocol::rtsp(
+                                    &format!("SET_PARAMETER {url} RTSP/1.0"),
+                                    sequence,
+                                    "wfd_uibc_setting: enable\r\n",
+                                    &format!("Session: {session_id}\r\n"),
+                                ),
+                            )?;
+                            stream.set_write_timeout(Some(TCP_WRITE_TIMEOUT))?;
+                            let mut input =
+                                tcp(local, remote, port, TCP_CONNECT_TIMEOUT.min(time_left()?))?;
+                            input.set_write_timeout(Some(TCP_WRITE_TIMEOUT.min(time_left()?)))?;
+                            input.write_all(&protocol::keyboard_descriptor())?;
+                            input.set_write_timeout(Some(TCP_WRITE_TIMEOUT))?;
+                            Ok(input)
+                        })();
+                        time_left()?;
+                        let input = input.context("Could not start phone input")?;
                         input_stream = Some(input.try_clone()?);
                         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(512);
                         *state.input.lock().unwrap() = Some(sender);
@@ -707,6 +723,16 @@ mod tests {
         )
         .is_ok());
         assert!(check_session_start(RTSP_START_TIMEOUT, false, true).is_err());
+    }
+
+    #[test]
+    fn late_input_setup_has_only_the_remaining_negotiation_time() {
+        let remaining = Duration::from_millis(100);
+        assert_eq!(
+            negotiation_time_left(RTSP_START_TIMEOUT - remaining).unwrap(),
+            remaining
+        );
+        assert!(negotiation_time_left(RTSP_START_TIMEOUT).is_err());
     }
 
     #[test]

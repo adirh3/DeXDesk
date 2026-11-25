@@ -7,6 +7,7 @@ and use DeX inside a clean window. One settings icon keeps everything else out
 of the way.
 
 [Download DeXDesk for Windows x64](https://github.com/adirh3/DeXDesk/releases/latest/download/DeXDesk.exe)
+&middot; [Download for Windows ARM64](https://github.com/adirh3/DeXDesk/releases/latest/download/DeXDesk-arm64.exe)
 &middot; [All releases](https://github.com/adirh3/DeXDesk/releases)
 &middot; [Report an issue](https://github.com/adirh3/DeXDesk/issues)
 
@@ -20,15 +21,16 @@ of the way.
 - Runs without installation, administrator access, phone apps, USB debugging,
   .NET, a browser engine, or a bundled FFmpeg process.
 
-**Early release:** verified with a Galaxy Fold7 running Android 17 on one Windows
-PC, and with a Galaxy S22 Ultra on a Snapdragon X Elite PC (Qualcomm FastConnect
-7800 Wi-Fi). Other phones, adapters, drivers, and Windows versions may behave
-differently.
+**Early release:** the updated Wi-Fi Direct negotiation was verified with a
+Galaxy S22 Ultra on a Snapdragon X Elite PC (Qualcomm FastConnect 7800 Wi-Fi).
+A Galaxy Fold7 running Android 17 was tested on Windows x64 with the previous
+negotiation behavior; it has not yet been retested on this version. Other phones,
+adapters, drivers, and Windows versions may behave differently.
 
 ## Connect in three steps
 
 1. Close Windows Wireless Display or any other Miracast receiver, then open
-   `DeXDesk.exe`.
+   the DeXDesk EXE for your PC's architecture.
 2. Keep the laptop's Wi-Fi enabled, even if its internet connection uses Ethernet.
 3. On the phone, open **Quick settings > DeX > TV or monitor**, then select the
    computer name shown on the welcome screen.
@@ -51,7 +53,7 @@ out, end it on the Galaxy and select the PC again.
 
 | Requirement | Details |
 |---|---|
-| Laptop | Windows 10/11 x64, or Windows 11 ARM64 (build from source), Wi-Fi Direct-capable adapter and driver |
+| Laptop | Windows 10/11 x64 or Windows 11 ARM64, Wi-Fi Direct-capable adapter and driver |
 | Video | Windows Media Foundation H.264 decoder and Direct3D 11 |
 | Phone | A Galaxy device supporting **wireless DeX** |
 | Windows N | The Windows Media Feature Pack may be required |
@@ -123,9 +125,9 @@ Studio installation is not required.
 The packaging step embeds the Windows manifest, icon, version, and license
 notices through native Windows APIs. Source paths are remapped for application
 code and dependencies so release binaries do not disclose the builder's local
-checkout path. Packaging fails if checkout, home, or Cargo-home paths remain in
-UTF-8 or UTF-16 binary strings. Environment changes are process-local and
-restored when it finishes.
+checkout path. Packaging fails if checkout, home, Cargo-home, or ARM64
+llvm-mingw paths remain in UTF-8 or UTF-16 binary strings. Environment changes
+are process-local and restored when it finishes.
 
 ### Windows on ARM (ARM64)
 
@@ -141,6 +143,8 @@ rustup toolchain install 1.99.1-aarch64-pc-windows-gnullvm --profile minimal
 
 libunwind is linked statically, so the EXE needs no runtime DLLs beyond those
 supplied by Windows.
+Release builds use llvm-mingw 20261117 and embed its
+[MinGW-w64 runtime notice](licenses/MinGW-w64-runtime.txt).
 
 ### Developer checks
 
