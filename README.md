@@ -44,7 +44,7 @@ diagnostics. Quality changes apply on the next connection.
 
 | Requirement | Details |
 |---|---|
-| Laptop | Windows 10/11 x64, Wi-Fi Direct-capable adapter and driver |
+| Laptop | Windows 10/11 x64, or Windows 11 ARM64 (build from source), Wi-Fi Direct-capable adapter and driver |
 | Video | Windows Media Foundation H.264 decoder and Direct3D 11 |
 | Phone | A Galaxy device supporting **wireless DeX** |
 | Windows N | The Windows Media Feature Pack may be required |
@@ -118,6 +118,21 @@ code and dependencies so release binaries do not disclose the builder's local
 checkout path. Packaging fails if checkout, home, or Cargo-home paths remain in
 UTF-8 or UTF-16 binary strings. Environment changes are process-local and
 restored when it finishes.
+
+### Windows on ARM (ARM64)
+
+On an ARM64 PC, build a native ARM64 EXE with the `aarch64-pc-windows-gnullvm`
+toolchain. It links with clang/lld from
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases): extract the
+`ucrt-aarch64` release into `.tools\` (or put its `bin` folder on `PATH`).
+
+```powershell
+rustup toolchain install 1.99.1-aarch64-pc-windows-gnullvm --profile minimal
+.\build.ps1 -Architecture arm64 -Test
+```
+
+libunwind is linked statically, so the EXE needs no runtime DLLs beyond those
+supplied by Windows.
 
 ### Developer checks
 

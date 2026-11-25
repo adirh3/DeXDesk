@@ -149,6 +149,8 @@ windows-strings-0.1.0
 windows-sys-0.60.2
 windows-targets-0.52.6
 windows-targets-0.53.5
+windows_aarch64_gnullvm-0.52.6
+windows_aarch64_gnullvm-0.53.1
 windows_x86_64_gnu-0.52.6
 windows_x86_64_gnu-0.53.1
 

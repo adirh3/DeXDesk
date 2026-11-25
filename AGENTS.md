@@ -45,8 +45,10 @@ picture. Preserve the clean window with one settings icon.
 
 ## Build and verification
 
-This is a Windows x64 project. Use the pinned GNU toolchain and committed
-`Cargo.lock`; do not update dependencies incidentally.
+This is a Windows x64 project that also builds natively for ARM64
+(`.\build.ps1 -Architecture arm64`, pinned `aarch64-pc-windows-gnullvm` toolchain
+plus llvm-mingw). Use the pinned toolchains and committed `Cargo.lock`; do not
+update dependencies incidentally.
 
 ```powershell
 rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal
