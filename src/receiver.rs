@@ -156,8 +156,8 @@ fn connect_phone(
 ) -> Result<()> {
     let information = request.DeviceInformation()?;
     state.set_phase(Phase::Connecting(information.Name()?.to_string()));
+    // Leave group-owner intent to Windows; forcing 15 fails on some drivers.
     let parameters = WiFiDirectConnectionParameters::new()?;
-    parameters.SetGroupOwnerIntent(15)?;
     let operation = WiFiDirectDevice::FromIdAsync2(&information.Id()?, &parameters)?;
     let deadline = Instant::now() + Duration::from_secs(20);
     while operation.Status()? == AsyncStatus::Started {
@@ -167,9 +167,15 @@ fn connect_phone(
         }
         thread::sleep(Duration::from_millis(30));
     }
-    let device = operation
-        .GetResults()
-        .context("Windows could not connect to the phone")?;
+    // A failed connection completes without a device; report the real status
+    // and HRESULT instead of the empty "operation completed successfully".
+    let device = operation.GetResults().map_err(|_| {
+        anyhow::anyhow!(
+            "Windows could not connect to the phone (status {}, error 0x{:08X})",
+            operation.Status().map(|s| s.0).unwrap_or(-1),
+            operation.ErrorCode().map(|c| c.0).unwrap_or(-1)
+        )
+    })?;
     let result = (|| -> Result<()> {
         let endpoints = device.GetConnectionEndpointPairs()?;
         let mut peer = None;

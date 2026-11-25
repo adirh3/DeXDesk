@@ -35,9 +35,12 @@ impl Advertisement {
         unsafe {
             let publisher = WiFiDirectAdvertisementPublisher::new()?;
             let listener = WiFiDirectConnectionListener::new()?;
+            // Let the phone run standard group-owner negotiation, as the Windows
+            // receiver does. Some drivers (Qualcomm FastConnect on Windows on ARM)
+            // stall pairing when the phone must join a standing autonomous group.
             publisher
                 .Advertisement()?
-                .SetIsAutonomousGroupOwnerEnabled(true)?;
+                .SetIsAutonomousGroupOwnerEnabled(false)?;
             publisher.Advertisement()?.SetListenStateDiscoverability(
                 WiFiDirectAdvertisementListenStateDiscoverability::Normal,
             )?;

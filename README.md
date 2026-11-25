@@ -21,7 +21,9 @@ of the way.
   .NET, a browser engine, or a bundled FFmpeg process.
 
 **Early release:** verified with a Galaxy Fold7 running Android 17 on one Windows
-PC. Other phones, adapters, drivers, and Windows versions may behave differently.
+PC, and with a Galaxy S22 Ultra on a Snapdragon X Elite PC (Qualcomm FastConnect
+7800 Wi-Fi). Other phones, adapters, drivers, and Windows versions may behave
+differently.
 
 ## Connect in three steps
 
