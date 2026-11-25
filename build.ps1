@@ -1,6 +1,8 @@
 param(
     [switch]$Test,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'),
+    [ValidateSet('x64','arm64')]
+    [string]$Architecture = 'x64'
 )
 $ErrorActionPreference = 'Stop'
 $previous = @{
@@ -19,17 +21,37 @@ try {
         $command = Get-Command cargo -ErrorAction Stop
         $cargo = $command.Source
     }
-    $toolchain='1.99.1-x86_64-pc-windows-gnu'
+    $linker = $null
+    if ($Architecture -eq 'arm64') {
+        # Native Windows on ARM build. The gnullvm toolchain links with clang/lld
+        # from llvm-mingw, taken from .tools\llvm-mingw-*-aarch64 or PATH.
+        $toolchain='1.99.1-aarch64-pc-windows-gnullvm'
+        $linker = Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '.tools') -Directory `
+            -Filter 'llvm-mingw-*-aarch64' -ErrorAction SilentlyContinue |
+            Sort-Object Name | Select-Object -Last 1 -ExpandProperty FullName
+        if ($linker) {
+            $env:PATH = (Join-Path $linker 'bin') + ';' + $env:PATH
+        } elseif (-not (Get-Command aarch64-w64-mingw32-clang -ErrorAction SilentlyContinue)) {
+            throw 'ARM64 builds need llvm-mingw (aarch64) in .tools or on PATH.'
+        }
+    } else {
+        $toolchain='1.99.1-x86_64-pc-windows-gnu'
+    }
     $flags = @(if ($env:CARGO_ENCODED_RUSTFLAGS) {
         @($env:CARGO_ENCODED_RUSTFLAGS -split [char]31)
     } elseif ($env:RUSTFLAGS) {
         @($env:RUSTFLAGS -split '\s+' | Where-Object { $_ })
     })
+    if ($Architecture -eq 'arm64') {
+        # Link libunwind statically so the EXE needs no extra runtime DLLs.
+        $flags += '-Ctarget-feature=+crt-static'
+    }
     # Remap dependency panic/source locations too, not just stripped debug symbols.
     $remaps = @(
         @($env:USERPROFILE,'user-home'),
         @($env:CARGO_HOME,'cargo-home'),
-        @($PSScriptRoot,'DeXDesk')
+        @($PSScriptRoot,'DeXDesk'),
+        @($linker,'llvm-mingw')
     )
     foreach ($remap in $remaps) {
         if ($remap[0]) {

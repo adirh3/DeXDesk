@@ -12,11 +12,12 @@ cargo = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
 registries = list((cargo / "registry" / "src").glob("*"))
 lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
 groups: dict[str, list[str]] = {}
-tree = subprocess.check_output([
+# One notices file covers both the x64 and ARM64 release builds.
+tree = "".join(subprocess.check_output([
     "cargo", "+1.99.1-x86_64-pc-windows-gnu", "tree", "--locked",
-    "--target", "x86_64-pc-windows-gnu", "--prefix", "none",
+    "--target", target, "--prefix", "none",
     "--format", "{p}", "--edges", "normal,build",
-], text=True)
+], text=True) for target in ("x86_64-pc-windows-gnu", "aarch64-pc-windows-gnullvm"))
 selected = {match.groups() for line in tree.splitlines()
             if (match := re.match(r"^([\w-]+) v([^\s]+)", line))}
 
