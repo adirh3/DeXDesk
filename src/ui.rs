@@ -34,30 +34,33 @@ const SAVE: usize = 102;
 const CANCEL: usize = 103;
 const LOG: usize = 104;
 const DISCONNECT: usize = 105;
+const CONNECTION_ACTION: usize = 106;
 const TICK: usize = 1;
 const HEALTH: usize = 2;
 const TBM_GETPOS: u32 = WM_USER;
 const MAIN_CLASS: PCWSTR = w!("DeXDeskWindow");
 const VIDEO_CLASS: PCWSTR = w!("DeXDeskCanvas");
 const SETTINGS_CLASS: PCWSTR = w!("DeXDeskSettings");
-const BACKGROUND: COLORREF = COLORREF(0x00100d09);
+const BACKGROUND: COLORREF = COLORREF(0x00171310);
+const STATUS_PANEL: COLORREF = COLORREF(0x00282019);
 const WHITE: COLORREF = COLORREF(0x00f6f2ec);
 const MUTED: COLORREF = COLORREF(0x00b8a89a);
-const ACCENT: COLORREF = COLORREF(0x00f0bf74);
+const ACCENT: COLORREF = COLORREF(0x00ffcf91);
 
 struct App {
     state: Arc<AppState>,
     parent: Cell<HWND>,
     video: Cell<HWND>,
     gear: Cell<HWND>,
+    connection_action: Cell<HWND>,
     dialog: Cell<HWND>,
     quality: Cell<HWND>,
     speed: Cell<HWND>,
     top: Cell<HWND>,
     information: Cell<HWND>,
+    disconnect_button: Cell<HWND>,
     regular: Cell<HFONT>,
     title: Cell<HFONT>,
-    small: Cell<HFONT>,
     icon: Cell<HFONT>,
     worker: RefCell<Option<JoinHandle<()>>>,
     gesture: RefCell<Gesture>,
@@ -81,14 +84,15 @@ impl App {
             parent: Cell::new(HWND::default()),
             video: Cell::new(HWND::default()),
             gear: Cell::new(HWND::default()),
+            connection_action: Cell::new(HWND::default()),
             dialog: Cell::new(HWND::default()),
             quality: Cell::new(HWND::default()),
             speed: Cell::new(HWND::default()),
             top: Cell::new(HWND::default()),
             information: Cell::new(HWND::default()),
+            disconnect_button: Cell::new(HWND::default()),
             regular: Cell::new(HFONT::default()),
             title: Cell::new(HFONT::default()),
-            small: Cell::new(HFONT::default()),
             icon: Cell::new(HFONT::default()),
             worker: RefCell::new(None),
             gesture: RefCell::new(Gesture::default()),
@@ -277,19 +281,13 @@ impl App {
         true
     }
     unsafe fn fonts(&self) {
-        for font in [
-            self.regular.get(),
-            self.title.get(),
-            self.small.get(),
-            self.icon.get(),
-        ] {
+        for font in [self.regular.get(), self.title.get(), self.icon.get()] {
             if !font.is_invalid() {
                 let _ = DeleteObject(font);
             }
         }
         self.regular.set(font(self.scale(16), 400, w!("Segoe UI")));
         self.title.set(font(self.scale(32), 600, w!("Segoe UI")));
-        self.small.set(font(self.scale(13), 400, w!("Segoe UI")));
         self.icon
             .set(font(self.scale(21), 400, w!("Segoe MDL2 Assets")));
     }
@@ -308,6 +306,81 @@ impl App {
             self.scale(36),
             SWP_NOACTIVATE,
         );
+        let (x, y) = self.welcome_origin(rect);
+        let _ = SetWindowPos(
+            self.connection_action.get(),
+            HWND_TOP,
+            x,
+            y + self.scale(284),
+            self.scale(156),
+            self.scale(36),
+            SWP_NOACTIVATE,
+        );
+        let _ = InvalidateRect(self.video.get(), None, false);
+    }
+    fn welcome_origin(&self, rect: RECT) -> (i32, i32) {
+        let margin = self.scale(36);
+        let x = ((rect.right - self.scale(680)) / 2).max(margin);
+        let y = ((rect.bottom - self.scale(332)) / 2).max(self.scale(48));
+        (x, y)
+    }
+    unsafe fn update_connection_controls(&self) {
+        let closing = self.closing.get();
+        let active = self.state.session_active.load(Ordering::Acquire)
+            && !self.state.disconnect.load(Ordering::Acquire);
+        let live = self.state.live.load(Ordering::Acquire);
+        let unavailable = matches!(*self.state.phase.lock().unwrap(), Phase::ReceiverUnavailable(_));
+        let action = self.connection_action.get();
+        if !closing && (unavailable || active && !live) {
+            let (label, enabled) = if unavailable {
+                (
+                    w!("Retry receiver"),
+                    self.worker.borrow().as_ref().is_some_and(|worker| worker.is_finished()),
+                )
+            } else {
+                (w!("Cancel connection"), true)
+            };
+            let _ = SetWindowTextW(action, label);
+            let _ = EnableWindow(action, enabled);
+            let _ = ShowWindow(action, SW_SHOWNA);
+        } else {
+            if GetFocus() == action {
+                let _ = SetFocus(self.gear.get());
+            }
+            let _ = ShowWindow(action, SW_HIDE);
+        }
+        if !self.dialog.get().is_invalid() {
+            let _ = EnableWindow(self.disconnect_button.get(), active && !closing);
+            let value = wide(&self.connection_info());
+            let _ = SetWindowTextW(self.information.get(), PCWSTR(value.as_ptr()));
+        }
+    }
+    unsafe fn cancel_connection(&self) {
+        self.release();
+        self.state.disconnect.store(true, Ordering::Release);
+        self.update_connection_controls();
+        let _ = InvalidateRect(self.video.get(), None, false);
+    }
+    unsafe fn connection_action(&self) {
+        if self.closing.get() {
+            return;
+        }
+        let unavailable = matches!(*self.state.phase.lock().unwrap(), Phase::ReceiverUnavailable(_));
+        if unavailable {
+            if !self.worker.borrow().as_ref().is_some_and(|worker| worker.is_finished()) {
+                return;
+            }
+            if let Some(worker) = self.worker.borrow_mut().take() {
+                if worker.join().is_err() {
+                    self.state.log("Receiver worker stopped unexpectedly");
+                }
+            }
+            self.state.set_phase(Phase::Starting);
+            *self.worker.borrow_mut() = Some(crate::receiver::start(self.state.clone()));
+            self.update_connection_controls();
+        } else if self.state.session_active.load(Ordering::Acquire) {
+            self.cancel_connection();
+        }
     }
     unsafe fn welcome(&self, window: HWND) {
         let mut paint = PAINTSTRUCT::default();
@@ -319,32 +392,34 @@ impl App {
             SetDCBrushColor(dc, BACKGROUND);
             FillRect(dc, &rect, HBRUSH(brush.0));
             SetBkMode(dc, TRANSPARENT);
-            let x = self.scale(56);
-            let width = (rect.right - x * 2).max(self.scale(260));
-            let y = (rect.bottom / 2 - self.scale(150)).max(self.scale(58));
+            let (x, y) = self.welcome_origin(rect);
+            let width = rect.right - x * 2;
             let phase = self.state.phase.lock().unwrap().clone();
-            let error = matches!(phase, Phase::Error(_));
-            let (heading, status) = match phase {
-                Phase::Starting => (
-                    "Getting ready",
-                    "Starting the wireless receiver...".to_owned(),
-                ),
-                Phase::Ready => (
-                    "Your Galaxy, on your laptop",
-                    "Ready for wireless DeX".to_owned(),
-                ),
-                Phase::Connecting(name) => ("Connecting", format!("Connecting to {name}...")),
-                Phase::Connected => (
-                    "Almost there",
-                    "Waiting for the first picture...".to_owned(),
-                ),
-                Phase::Error(message) => ("Let's get connected", message),
+            let busy = self.state.session_active.load(Ordering::Acquire);
+            let cancelled = busy && self.state.disconnect.load(Ordering::Acquire);
+            let error = matches!(phase, Phase::Error(_) | Phase::ReceiverUnavailable(_));
+            let (status, detail) = if self.closing.get() || cancelled {
+                ("Disconnecting", "Windows is closing the connection.".into())
+            } else {
+                match phase {
+                    Phase::Preview => ("Preview", "The wireless receiver is paused in preview mode.".into()),
+                    Phase::Starting => ("Starting receiver", "Waiting for Windows to start Wi-Fi Direct.".into()),
+                    Phase::Ready => ("Ready to connect", "Keep Wi-Fi on and select this PC on your Galaxy.".into()),
+                    Phase::Connecting(name) => ("Connecting", format!("Setting up the wireless connection with {name}.")),
+                    Phase::Negotiating => (
+                        "Setting up the cast",
+                        "Wi-Fi Direct connected. Waiting for the phone to agree on video and input.".into(),
+                    ),
+                    Phase::WaitingForVideo => ("Waiting for video", "The phone connected. Waiting for the first picture.".into()),
+                    Phase::ReceiverUnavailable(message) => ("Receiver unavailable", message),
+                    Phase::Error(message) => ("Connection interrupted", message),
+                }
             };
             text(
                 dc,
                 self.title.get(),
                 WHITE,
-                heading,
+                "Wireless Samsung DeX",
                 RECT {
                     left: x,
                     top: y,
@@ -353,36 +428,55 @@ impl App {
                 },
                 DT_LEFT | DT_SINGLELINE,
             );
+            let status_panel = RECT {
+                left: x,
+                top: y + self.scale(60),
+                right: x + width,
+                bottom: y + self.scale(166),
+            };
+            SetDCBrushColor(dc, STATUS_PANEL);
+            FillRect(dc, &status_panel, HBRUSH(brush.0));
+            let inset = self.scale(16);
             text(
                 dc,
                 self.regular.get(),
-                if error { COLORREF(0x0096a6f5) } else { ACCENT },
-                &status,
+                if error { COLORREF(0x0096b0ff) } else { ACCENT },
+                status,
                 RECT {
-                    left: x,
-                    top: y + self.scale(60),
-                    right: x + width,
-                    bottom: y + self.scale(128),
+                    left: x + inset,
+                    top: y + self.scale(72),
+                    right: x + width - inset,
+                    bottom: y + self.scale(100),
+                },
+                DT_LEFT | DT_SINGLELINE,
+            );
+            text(
+                dc,
+                self.regular.get(),
+                MUTED,
+                &detail,
+                RECT {
+                    left: x + inset,
+                    top: y + self.scale(103),
+                    right: x + width - inset,
+                    bottom: y + self.scale(156),
                 },
                 DT_LEFT | DT_WORDBREAK,
             );
-            let computer = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this PC".to_owned());
-            let instructions=format!("1   Open Quick settings on your Galaxy\n2   Tap DeX, then TV or monitor\n3   Choose {computer}");
+            let computer = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this PC".into());
             text(
                 dc,
                 self.regular.get(),
                 WHITE,
-                &instructions,
+                &format!("On your Galaxy, open Quick settings → DeX → TV or monitor.\nSelect {computer}."),
                 RECT {
                     left: x,
-                    top: y + self.scale(145),
+                    top: y + self.scale(190),
                     right: x + width,
-                    bottom: y + self.scale(255),
+                    bottom: y + self.scale(263),
                 },
                 DT_LEFT | DT_WORDBREAK,
             );
-            text(dc,self.small.get(),MUTED,"Keep Wi-Fi on, even if your laptop uses Ethernet.\nNo cable. No phone app. No USB debugging.",
-                RECT{left:x,top:y+self.scale(275),right:x+width,bottom:y+self.scale(335)},DT_LEFT|DT_WORDBREAK);
         }
         let _ = EndPaint(window, &paint);
     }
@@ -567,7 +661,7 @@ impl App {
             30,
             LOG,
         );
-        control(
+        let disconnect = control(
             w!("BUTTON"),
             "Disconnect",
             WS_TABSTOP,
@@ -576,6 +670,12 @@ impl App {
             110,
             30,
             DISCONNECT,
+        );
+        self.disconnect_button.set(disconnect);
+        let _ = EnableWindow(
+            disconnect,
+            self.state.session_active.load(Ordering::Acquire)
+                && !self.state.disconnect.load(Ordering::Acquire),
         );
         control(w!("BUTTON"), "Cancel", WS_TABSTOP, 222, 366, 90, 32, CANCEL);
         control(
@@ -590,10 +690,28 @@ impl App {
         );
     }
     fn connection_info(&self) -> String {
-        if let Some(mode) = self.mode() {
-            format!("Connected: {} x {}, {} FPS selected\nLive: {:.1} FPS decoded - Windows native video",mode.width,mode.height,mode.fps,self.fps.get())
-        } else {
-            "Not connected. Right-click uses long-press; wheel uses smooth scrolling.".into()
+        if self.state.live.load(Ordering::Acquire) {
+            if let Some(mode) = self.mode() {
+                let backend = self.state.backend.lock().unwrap();
+                return format!(
+                    "{} × {} · {} FPS selected · {:.1} decoded\n{backend}",
+                    mode.width,
+                    mode.height,
+                    mode.fps,
+                    self.fps.get(),
+                );
+            }
+        }
+        let phase = self.state.phase.lock().unwrap();
+        match &*phase {
+            Phase::Preview => "Preview mode".into(),
+            Phase::Starting => "Starting receiver…".into(),
+            Phase::Ready => "Ready for wireless DeX".into(),
+            Phase::Connecting(_) => "Setting up the wireless connection…".into(),
+            Phase::Negotiating => "Negotiating video and input…".into(),
+            Phase::WaitingForVideo => "Waiting for the first picture…".into(),
+            Phase::ReceiverUnavailable(_) => "Receiver unavailable. Close Settings to retry.".into(),
+            Phase::Error(_) => "Connection interrupted. View Diagnostics for details.".into(),
         }
     }
     unsafe fn apply_settings(&self) -> Result<()> {
@@ -727,9 +845,7 @@ pub fn run(state: Arc<AppState>, preview: bool, smoke: bool) -> Result<()> {
         );
         let _ = ShowWindow(window, SW_SHOW);
         if preview {
-            state.set_phase(Phase::Error(
-                "UI preview - wireless receiver is not started".into(),
-            ));
+            state.set_phase(Phase::Preview);
         } else {
             *app.worker.borrow_mut() = Some(crate::receiver::start(state.clone()));
         }
@@ -747,6 +863,12 @@ pub fn run(state: Arc<AppState>, preview: bool, smoke: bool) -> Result<()> {
             {
                 continue;
             }
+            if app.dialog.get().is_invalid()
+                && !state.live.load(Ordering::Acquire)
+                && IsDialogMessageW(window, &message).as_bool()
+            {
+                continue;
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -756,12 +878,7 @@ pub fn run(state: Arc<AppState>, preview: bool, smoke: bool) -> Result<()> {
                 state.log("Receiver worker stopped unexpectedly");
             }
         }
-        for font in [
-            app.regular.get(),
-            app.title.get(),
-            app.small.get(),
-            app.icon.get(),
-        ] {
+        for font in [app.regular.get(), app.title.get(), app.icon.get()] {
             if !font.is_invalid() {
                 let _ = DeleteObject(font);
             }
@@ -843,6 +960,29 @@ unsafe extern "system" fn main_proc(
                     return LRESULT(-1);
                 }
             }
+            match CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("BUTTON"),
+                None,
+                WS_CHILD | WS_TABSTOP,
+                0,
+                0,
+                1,
+                1,
+                window,
+                HMENU(CONNECTION_ACTION as *mut _),
+                instance,
+                None,
+            ) {
+                Ok(action) => {
+                    app.connection_action.set(action);
+                    SendMessageW(action, WM_SETFONT, WPARAM(app.regular.get().0 as usize), LPARAM(0));
+                }
+                Err(error) => {
+                    app.state.log(format!("Could not create the connection button: {error}"));
+                    return LRESULT(-1);
+                }
+            }
             app.layout();
             SetTimer(window, HEALTH, 1000, None);
             LRESULT(0)
@@ -853,6 +993,7 @@ unsafe extern "system" fn main_proc(
         }
         WM_DPICHANGED => {
             app.fonts();
+            SendMessageW(app.connection_action.get(), WM_SETFONT, WPARAM(app.regular.get().0 as usize), LPARAM(1));
             let rect = &*(lparam.0 as *const RECT);
             let _ = SetWindowPos(
                 window,
@@ -876,6 +1017,10 @@ unsafe extern "system" fn main_proc(
         }
         WM_COMMAND if wparam.0 & 0xffff == GEAR => {
             app.open_settings();
+            LRESULT(0)
+        }
+        WM_COMMAND if wparam.0 & 0xffff == CONNECTION_ACTION => {
+            app.connection_action();
             LRESULT(0)
         }
         WM_DRAWITEM => {
@@ -930,10 +1075,7 @@ unsafe extern "system" fn main_proc(
                     .max(0.001);
                 let previous = app.last_frames.replace(count);
                 app.fps.set(count.saturating_sub(previous) as f64 / elapsed);
-                if !app.dialog.get().is_invalid() {
-                    let value = wide(&app.connection_info());
-                    let _ = SetWindowTextW(app.information.get(), PCWSTR(value.as_ptr()));
-                }
+                app.update_connection_controls();
             }
             LRESULT(0)
         }
@@ -943,6 +1085,7 @@ unsafe extern "system" fn main_proc(
                 app.last_frames.set(0);
                 app.fps.set(0.0);
             }
+            app.update_connection_controls();
             let _ = InvalidateRect(app.video.get(), None, false);
             LRESULT(0)
         }
@@ -976,6 +1119,8 @@ unsafe extern "system" fn main_proc(
                 app.state.running.store(false, Ordering::Release);
                 app.state.disconnect.store(true, Ordering::Release);
                 let _ = EnableWindow(app.gear.get(), false);
+                app.update_connection_controls();
+                let _ = InvalidateRect(app.video.get(), None, false);
             }
             LRESULT(0)
         }
@@ -1102,7 +1247,7 @@ unsafe extern "system" fn settings_proc(
                     }
                 }
                 DISCONNECT => {
-                    app.state.disconnect.store(true, Ordering::Release);
+                    app.cancel_connection();
                     app.close_settings();
                 }
                 _ => {}
